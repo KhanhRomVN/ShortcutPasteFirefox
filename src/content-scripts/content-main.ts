@@ -1,6 +1,20 @@
-// Bundled content script - no imports, all dependencies inlined
+// Firefox Content Script - Compatible with both Firefox and Chrome
+
+// Type declarations for Firefox browser API (must be at global scope)
+declare const browser: typeof chrome;
+
 (function () {
   'use strict';
+
+  // Firefox/Chrome API compatibility layer
+  const browserAPI = (function () {
+    if (typeof (globalThis as any).browser !== 'undefined') {
+      return (globalThis as any).browser; // Firefox
+    } else if (typeof (globalThis as any).chrome !== 'undefined') {
+      return (globalThis as any).chrome; // Chrome
+    }
+    throw new Error('No browser API available');
+  })();
 
   // Inline Logger
   class ContentLogger {
@@ -95,7 +109,7 @@
       }
     }
 
-    insertContent(element: HTMLElement, content: string, type: string): boolean {
+    private insertContent(element: HTMLElement, content: string, type: string): boolean {
       try {
         logger.info(`📝 Inserting ${type} content into ${element.tagName}`, {});
 
@@ -118,7 +132,7 @@
       }
     }
 
-    triggerInputEvents(element: HTMLElement): void {
+    private triggerInputEvents(element: HTMLElement): void {
       try {
         const events = [
           new Event('focus', { bubbles: true }),
@@ -151,10 +165,10 @@
       }
     }
 
-    pasteToInput(element: HTMLInputElement | HTMLTextAreaElement, content: string, type: string): boolean {
+    private pasteToInput(element: HTMLInputElement | HTMLTextAreaElement, content: string, type: string): boolean {
       logger.info('📝 Pasting to input element:', {
         tagName: element.tagName,
-        type: element.type,
+        type: (element as HTMLInputElement).type,
         disabled: element.disabled,
         readOnly: element.readOnly,
         selectionStart: element.selectionStart,
@@ -201,7 +215,7 @@
       }
     }
 
-    pasteToContentEditable(element: HTMLElement, content: string, type: string): boolean {
+    private pasteToContentEditable(element: HTMLElement, content: string, type: string): boolean {
       logger.info('📝 Pasting to contentEditable element', { contentType: type });
 
       try {
@@ -275,13 +289,13 @@
       }
     }
 
-    isHtmlContent(content: string): boolean {
+    private isHtmlContent(content: string): boolean {
       const trimmed = content.trim();
       return trimmed.includes('<') && trimmed.includes('>') &&
         (trimmed.includes('</') || trimmed.startsWith('<html') || trimmed.startsWith('<!DOCTYPE'));
     }
 
-    isUrlContent(content: string): boolean {
+    private isUrlContent(content: string): boolean {
       try {
         new URL(content);
         return true;
@@ -373,7 +387,7 @@
     initialize(): void {
       logger.info('📡 Setting up message listener...', {});
 
-      chrome.runtime.onMessage.addListener((message: any, sender: chrome.runtime.MessageSender, sendResponse: (response: any) => void) => {
+      browserAPI.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: (response: any) => void) => {
         logger.info('📨 Content script received message:', {
           action: message.action,
           hasContent: !!message.content,
@@ -381,7 +395,7 @@
           contentLength: message.content?.length || 0
         });
 
-        this.handleMessage(message, sender, sendResponse);
+        this.handleMessage(message, _sender, sendResponse);
         return true;
       });
 
@@ -401,7 +415,7 @@
       }
     }
 
-    async handleMessage(message: any, _sender: chrome.runtime.MessageSender, sendResponse: (response: any) => void): Promise<void> {
+    async handleMessage(message: any, _sender: any, sendResponse: (response: any) => void): Promise<void> {
       const startTime = Date.now();
       logger.info(`🔄 Processing message action: ${message.action}`, {});
 

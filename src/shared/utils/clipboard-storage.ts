@@ -1,27 +1,45 @@
 import { ClipboardItem, ClipboardFolder } from '../../types/clipboard';
 
+// Firefox/Chrome compatibility layer
+const getBrowserAPI = () => {
+    if (typeof browser !== 'undefined') {
+        return browser; // Firefox
+    } else if (typeof chrome !== 'undefined') {
+        return chrome; // Chrome
+    }
+    throw new Error('No browser API available');
+};
+
 class ClipboardStorage {
     private readonly STORAGE_KEYS = {
-        ITEMS: 'clipboard_items_v3',  // Upgraded to v3 for better reliability
+        ITEMS: 'clipboard_items_v3',
         FOLDERS: 'clipboard_folders_v3'
     };
 
+    private get browserAPI() {
+        return getBrowserAPI();
+    }
+
     async getClipboardItems(): Promise<ClipboardItem[]> {
         try {
+            const browserAPI = this.browserAPI;
+
             // Always check local storage first (more persistent)
-            const localResult = await chrome.storage.local.get(this.STORAGE_KEYS.ITEMS);
+            const localResult = await browserAPI.storage.local.get(this.STORAGE_KEYS.ITEMS);
             if (localResult[this.STORAGE_KEYS.ITEMS]) {
                 console.log('Found clipboard items in local storage');
                 return localResult[this.STORAGE_KEYS.ITEMS];
             }
 
-            // Fallback to sync storage
-            const syncResult = await chrome.storage.sync.get(this.STORAGE_KEYS.ITEMS);
-            if (syncResult[this.STORAGE_KEYS.ITEMS]) {
-                console.log('Found clipboard items in sync storage, migrating to local');
-                // Migrate to local storage for better persistence
-                await this.saveClipboardItems(syncResult[this.STORAGE_KEYS.ITEMS]);
-                return syncResult[this.STORAGE_KEYS.ITEMS];
+            // Fallback to sync storage if available
+            if (browserAPI.storage.sync) {
+                const syncResult = await browserAPI.storage.sync.get(this.STORAGE_KEYS.ITEMS);
+                if (syncResult[this.STORAGE_KEYS.ITEMS]) {
+                    console.log('Found clipboard items in sync storage, migrating to local');
+                    // Migrate to local storage for better persistence
+                    await this.saveClipboardItems(syncResult[this.STORAGE_KEYS.ITEMS]);
+                    return syncResult[this.STORAGE_KEYS.ITEMS];
+                }
             }
 
             console.log('No clipboard items found');
@@ -34,26 +52,30 @@ class ClipboardStorage {
 
     async saveClipboardItems(items: ClipboardItem[]): Promise<void> {
         try {
+            const browserAPI = this.browserAPI;
+
             // Always save to local storage first (most reliable)
-            await chrome.storage.local.set({ [this.STORAGE_KEYS.ITEMS]: items });
+            await browserAPI.storage.local.set({ [this.STORAGE_KEYS.ITEMS]: items });
             console.log(`Saved ${items.length} clipboard items to local storage`);
 
-            // Also try to sync to sync storage if data is small enough
-            const itemsSize = new Blob([JSON.stringify(items)]).size;
-            if (itemsSize <= 80000) { // Reduced to 80KB for safety margin
-                try {
-                    await chrome.storage.sync.set({ [this.STORAGE_KEYS.ITEMS]: items });
-                    console.log('Also synced to sync storage');
-                } catch (syncError) {
-                    console.warn('Sync storage failed, but local storage succeeded:', syncError);
-                }
-            } else {
-                console.log('Data too large for sync storage, using local only');
-                // Clear from sync storage if it exists there
-                try {
-                    await chrome.storage.sync.remove(this.STORAGE_KEYS.ITEMS);
-                } catch (e) {
-                    // Ignore errors when cleaning up sync storage
+            // Also try to sync to sync storage if data is small enough and available
+            if (browserAPI.storage.sync) {
+                const itemsSize = new Blob([JSON.stringify(items)]).size;
+                if (itemsSize <= 80000) { // Reduced to 80KB for safety margin
+                    try {
+                        await browserAPI.storage.sync.set({ [this.STORAGE_KEYS.ITEMS]: items });
+                        console.log('Also synced to sync storage');
+                    } catch (syncError) {
+                        console.warn('Sync storage failed, but local storage succeeded:', syncError);
+                    }
+                } else {
+                    console.log('Data too large for sync storage, using local only');
+                    // Clear from sync storage if it exists there
+                    try {
+                        await browserAPI.storage.sync.remove(this.STORAGE_KEYS.ITEMS);
+                    } catch (e) {
+                        // Ignore errors when cleaning up sync storage
+                    }
                 }
             }
         } catch (error) {
@@ -63,9 +85,22 @@ class ClipboardStorage {
     }
 
     async addClipboardItem(itemData: Omit<ClipboardItem, 'id' | 'timestamp'>): Promise<ClipboardItem> {
+        // Firefox/Chrome compatible UUID generation
+        const generateId = (): string => {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            // Fallback for older browsers
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                const r = Math.random() * 16 | 0;
+                const v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        };
+
         const newItem: ClipboardItem = {
             ...itemData,
-            id: crypto.randomUUID(),
+            id: generateId(),
             timestamp: Date.now(),
             isFavorite: itemData.isFavorite || false
         };
@@ -91,18 +126,22 @@ class ClipboardStorage {
 
     async getClipboardFolders(): Promise<ClipboardFolder[]> {
         try {
+            const browserAPI = this.browserAPI;
+
             // Always check local storage first
-            const localResult = await chrome.storage.local.get(this.STORAGE_KEYS.FOLDERS);
+            const localResult = await browserAPI.storage.local.get(this.STORAGE_KEYS.FOLDERS);
             if (localResult[this.STORAGE_KEYS.FOLDERS]) {
                 return localResult[this.STORAGE_KEYS.FOLDERS];
             }
 
-            // Fallback to sync storage
-            const syncResult = await chrome.storage.sync.get(this.STORAGE_KEYS.FOLDERS);
-            if (syncResult[this.STORAGE_KEYS.FOLDERS]) {
-                // Migrate to local storage
-                await this.saveClipboardFolders(syncResult[this.STORAGE_KEYS.FOLDERS]);
-                return syncResult[this.STORAGE_KEYS.FOLDERS];
+            // Fallback to sync storage if available
+            if (browserAPI.storage.sync) {
+                const syncResult = await browserAPI.storage.sync.get(this.STORAGE_KEYS.FOLDERS);
+                if (syncResult[this.STORAGE_KEYS.FOLDERS]) {
+                    // Migrate to local storage
+                    await this.saveClipboardFolders(syncResult[this.STORAGE_KEYS.FOLDERS]);
+                    return syncResult[this.STORAGE_KEYS.FOLDERS];
+                }
             }
 
             return [];
@@ -114,24 +153,28 @@ class ClipboardStorage {
 
     async saveClipboardFolders(folders: ClipboardFolder[]): Promise<void> {
         try {
+            const browserAPI = this.browserAPI;
+
             // Always save to local storage first
-            await chrome.storage.local.set({ [this.STORAGE_KEYS.FOLDERS]: folders });
+            await browserAPI.storage.local.set({ [this.STORAGE_KEYS.FOLDERS]: folders });
             console.log(`Saved ${folders.length} clipboard folders to local storage`);
 
-            // Also try to sync if data is small enough
-            const foldersSize = new Blob([JSON.stringify(folders)]).size;
-            if (foldersSize <= 80000) {
-                try {
-                    await chrome.storage.sync.set({ [this.STORAGE_KEYS.FOLDERS]: folders });
-                } catch (syncError) {
-                    console.warn('Folder sync storage failed, but local storage succeeded:', syncError);
-                }
-            } else {
-                // Clear from sync storage if too large
-                try {
-                    await chrome.storage.sync.remove(this.STORAGE_KEYS.FOLDERS);
-                } catch (e) {
-                    // Ignore cleanup errors
+            // Also try to sync if data is small enough and sync is available
+            if (browserAPI.storage.sync) {
+                const foldersSize = new Blob([JSON.stringify(folders)]).size;
+                if (foldersSize <= 80000) {
+                    try {
+                        await browserAPI.storage.sync.set({ [this.STORAGE_KEYS.FOLDERS]: folders });
+                    } catch (syncError) {
+                        console.warn('Folder sync storage failed, but local storage succeeded:', syncError);
+                    }
+                } else {
+                    // Clear from sync storage if too large
+                    try {
+                        await browserAPI.storage.sync.remove(this.STORAGE_KEYS.FOLDERS);
+                    } catch (e) {
+                        // Ignore cleanup errors
+                    }
                 }
             }
         } catch (error) {
@@ -141,8 +184,20 @@ class ClipboardStorage {
     }
 
     async createFolder(name: string, parentId?: string): Promise<ClipboardFolder> {
+        const generateId = (): string => {
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                return crypto.randomUUID();
+            }
+            // Fallback for older browsers
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                const r = Math.random() * 16 | 0;
+                const v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        };
+
         const newFolder: ClipboardFolder = {
-            id: crypto.randomUUID(),
+            id: generateId(),
             name,
             parentId,
             children: [],
@@ -208,6 +263,7 @@ class ClipboardStorage {
     // Enhanced migration to handle multiple versions
     async migrateOldData(): Promise<void> {
         try {
+            const browserAPI = this.browserAPI;
             const oldVersions = [
                 { ITEMS: 'clipboard_items', FOLDERS: 'clipboard_folders' },
                 { ITEMS: 'clipboard_items_v2', FOLDERS: 'clipboard_folders_v2' }
@@ -215,10 +271,14 @@ class ClipboardStorage {
 
             for (const oldKeys of oldVersions) {
                 // Check for old data in both storages
-                const [oldSyncData, oldLocalData] = await Promise.all([
-                    chrome.storage.sync.get([oldKeys.ITEMS, oldKeys.FOLDERS]),
-                    chrome.storage.local.get([oldKeys.ITEMS, oldKeys.FOLDERS])
-                ]);
+                const localPromise = browserAPI.storage.local.get([oldKeys.ITEMS, oldKeys.FOLDERS]);
+                let syncPromise: Promise<{ [key: string]: any }> = Promise.resolve({});
+
+                if (browserAPI.storage.sync) {
+                    syncPromise = browserAPI.storage.sync.get([oldKeys.ITEMS, oldKeys.FOLDERS]);
+                }
+
+                const [oldLocalData, oldSyncData] = await Promise.all([localPromise, syncPromise]);
 
                 let migratedItems: ClipboardItem[] = [];
                 let migratedFolders: ClipboardFolder[] = [];
@@ -226,13 +286,13 @@ class ClipboardStorage {
                 // Prefer local data over sync data for migration
                 if (oldLocalData[oldKeys.ITEMS]) {
                     migratedItems = oldLocalData[oldKeys.ITEMS];
-                } else if (oldSyncData[oldKeys.ITEMS]) {
+                } else if (oldSyncData && oldSyncData[oldKeys.ITEMS]) {
                     migratedItems = oldSyncData[oldKeys.ITEMS];
                 }
 
                 if (oldLocalData[oldKeys.FOLDERS]) {
                     migratedFolders = oldLocalData[oldKeys.FOLDERS];
-                } else if (oldSyncData[oldKeys.FOLDERS]) {
+                } else if (oldSyncData && oldSyncData[oldKeys.FOLDERS]) {
                     migratedFolders = oldSyncData[oldKeys.FOLDERS];
                 }
 
@@ -252,10 +312,17 @@ class ClipboardStorage {
 
                 // Clean up old data after successful migration
                 if (migratedItems.length > 0 || migratedFolders.length > 0) {
-                    await Promise.all([
-                        chrome.storage.sync.remove([oldKeys.ITEMS, oldKeys.FOLDERS]),
-                        chrome.storage.local.remove([oldKeys.ITEMS, oldKeys.FOLDERS])
-                    ]);
+                    const removePromises = [
+                        browserAPI.storage.local.remove([oldKeys.ITEMS, oldKeys.FOLDERS])
+                    ];
+
+                    if (browserAPI.storage.sync) {
+                        removePromises.push(
+                            browserAPI.storage.sync.remove([oldKeys.ITEMS, oldKeys.FOLDERS])
+                        );
+                    }
+
+                    await Promise.all(removePromises);
                     console.log('Cleaned up old storage keys:', oldKeys);
                 }
             }
