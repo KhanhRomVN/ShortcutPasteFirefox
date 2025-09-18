@@ -1,4 +1,6 @@
+// src/content-scripts/paste-handler.ts - SAFE VERSION
 import { logger } from '../shared/utils/logger';
+import { sanitizeHTML } from '../shared/utils/html-sanitizer';
 
 export class PasteHandler {
   /**
@@ -70,11 +72,12 @@ export class PasteHandler {
       // Special handling for different content types
       if (contentType === 'image' && content.startsWith('data:image/')) {
         logger.info('🖼️ Handling image content');
-        // For image content, we might want to insert as HTML or just as text depending on the element
         return this.insertContent(activeElement, content, 'image');
       } else if (contentType === 'html' && this.isHtmlContent(content)) {
-        logger.info('🌐 Handling HTML content');
-        return this.insertContent(activeElement, content, 'html');
+        logger.info('🌐 Handling HTML content - will be sanitized');
+        // ALWAYS sanitize HTML content for security
+        const sanitizedContent = sanitizeHTML(content);
+        return this.insertContent(activeElement, sanitizedContent, 'html');
       } else if (contentType === 'url' && this.isUrlContent(content)) {
         logger.info('🔗 Handling URL content');
         return this.insertContent(activeElement, content, 'url');
@@ -215,7 +218,7 @@ export class PasteHandler {
   }
 
   /**
-   * Paste content to contentEditable elements
+   * SAFE: Paste content to contentEditable elements using DOM methods instead of innerHTML
    */
   private pasteToContentEditable(element: HTMLElement, content: string, type: string): boolean {
     logger.info('📝 Pasting to contentEditable element', { contentType: type });
@@ -247,23 +250,16 @@ export class PasteHandler {
       let nodeToInsert: Node;
 
       // Handle different content types for contentEditable
-      if (type === 'html' && this.isHtmlContent(content)) {
-        logger.info('🌐 Inserting HTML content');
-        const tempDiv = document.createElement('div');
-        tempDiv.innerHTML = content;
-
-        // Insert each child node
-        const fragment = document.createDocumentFragment();
-        while (tempDiv.firstChild) {
-          fragment.appendChild(tempDiv.firstChild);
-        }
-        nodeToInsert = fragment;
+      if (type === 'html') {
+        logger.info('🌐 Inserting sanitized HTML content using safe DOM methods');
+        nodeToInsert = this.createSafeHTMLFragment(content);
       } else if (type === 'url') {
         logger.info('🔗 Inserting URL as link');
         const link = document.createElement('a');
-        link.href = content;
+        link.href = this.sanitizeURL(content);
         link.textContent = content;
         link.target = '_blank';
+        link.rel = 'noopener noreferrer'; // Security: prevent window.opener access
         nodeToInsert = link;
       } else if (type === 'image' && content.startsWith('data:image/')) {
         logger.info('🖼️ Inserting image');
@@ -271,6 +267,7 @@ export class PasteHandler {
         img.src = content;
         img.style.maxWidth = '100%';
         img.style.height = 'auto';
+        img.alt = 'Pasted image';
         nodeToInsert = img;
       } else {
         logger.info('📝 Inserting as text');
@@ -298,6 +295,46 @@ export class PasteHandler {
     } catch (error) {
       logger.error('❌ Failed to paste to contentEditable:', error);
       return false;
+    }
+  }
+
+  /**
+   * SAFE: Create HTML fragment using DOM methods instead of innerHTML
+   */
+  private createSafeHTMLFragment(html: string): DocumentFragment {
+    // First sanitize the HTML
+    const sanitizedHTML = sanitizeHTML(html);
+
+    // Use DOMParser instead of innerHTML for security
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(sanitizedHTML, 'text/html');
+
+    // Create a document fragment and move all body children to it
+    const fragment = document.createDocumentFragment();
+    while (doc.body.firstChild) {
+      fragment.appendChild(doc.body.firstChild);
+    }
+
+    return fragment;
+  }
+
+  /**
+   * SAFE: Sanitize URLs to prevent javascript: and other dangerous protocols
+   */
+  private sanitizeURL(url: string): string {
+    try {
+      const urlObj = new URL(url);
+
+      // Only allow safe protocols
+      const safeProtocols = ['http:', 'https:', 'ftp:', 'mailto:'];
+      if (!safeProtocols.includes(urlObj.protocol)) {
+        return '#'; // Return safe fallback
+      }
+
+      return urlObj.href;
+    } catch {
+      // If URL parsing fails, return safe fallback
+      return '#';
     }
   }
 

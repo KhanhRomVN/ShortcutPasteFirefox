@@ -8,8 +8,11 @@ import {
   Clipboard,
   Folder,
   Type,
+  Shield,
+  AlertTriangle,
 } from "lucide-react";
 import { ClipboardFolder, ClipboardItem } from "../../../types/clipboard";
+import { sanitizeHTML, isSafeHTML } from "../../../shared/utils/html-sanitizer";
 
 interface CreateClipboardItemModalProps {
   folders: ClipboardFolder[];
@@ -35,6 +38,10 @@ const CreateClipboardItemModal: React.FC<CreateClipboardItemModalProps> = ({
   const [folderId, setFolderId] = useState(initialFolderId || "");
   const [isCreating, setIsCreating] = useState(false);
   const [autoDetectType, setAutoDetectType] = useState(true);
+  const [htmlSafety, setHtmlSafety] = useState<{
+    isSafe: boolean;
+    sanitizedContent: string;
+  } | null>(null);
 
   // Auto-detect content type when content changes
   useEffect(() => {
@@ -45,6 +52,15 @@ const CreateClipboardItemModal: React.FC<CreateClipboardItemModalProps> = ({
       // Auto-generate title if empty
       if (!title.trim()) {
         setTitle(generateTitle(content));
+      }
+
+      // Check HTML safety if content is HTML
+      if (detectedType === "html") {
+        const isSafe = isSafeHTML(content);
+        const sanitizedContent = sanitizeHTML(content);
+        setHtmlSafety({ isSafe, sanitizedContent });
+      } else {
+        setHtmlSafety(null);
       }
     }
   }, [content, autoDetectType, title]);
@@ -67,7 +83,11 @@ const CreateClipboardItemModal: React.FC<CreateClipboardItemModalProps> = ({
     if (
       trimmedContent.includes("<") &&
       trimmedContent.includes(">") &&
-      (trimmedContent.includes("<html") || trimmedContent.includes("</"))
+      (trimmedContent.includes("<html") ||
+        trimmedContent.includes("</") ||
+        trimmedContent.includes("<div") ||
+        trimmedContent.includes("<p") ||
+        trimmedContent.includes("<span"))
     ) {
       return "html";
     }
@@ -106,9 +126,21 @@ const CreateClipboardItemModal: React.FC<CreateClipboardItemModalProps> = ({
 
     setIsCreating(true);
     try {
+      // For HTML content, use sanitized version if original is unsafe
+      let finalContent = content.trim();
+      if (type === "html" && htmlSafety && !htmlSafety.isSafe) {
+        // Ask user confirmation for unsafe HTML
+        const useSafe = confirm(
+          "This HTML content contains potentially unsafe elements. Would you like to save the sanitized version instead?"
+        );
+        if (useSafe) {
+          finalContent = htmlSafety.sanitizedContent;
+        }
+      }
+
       await onCreateItem({
         title: title.trim(),
-        content: content.trim(),
+        content: finalContent,
         type,
         folderId: folderId || undefined,
       });
@@ -151,6 +183,44 @@ const CreateClipboardItemModal: React.FC<CreateClipboardItemModalProps> = ({
       default:
         return <FileText size={16} className="text-gray-500" />;
     }
+  };
+
+  const renderSafeHTMLPreview = () => {
+    if (!htmlSafety || type !== "html") return null;
+
+    return (
+      <div className="space-y-3">
+        {/* Safety warning */}
+        {!htmlSafety.isSafe && (
+          <div className="flex items-center gap-2 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded">
+            <AlertTriangle
+              size={16}
+              className="text-yellow-600 dark:text-yellow-400"
+            />
+            <div className="text-sm text-yellow-800 dark:text-yellow-200">
+              <div className="font-medium">Unsafe HTML detected</div>
+              <div>
+                This content contains potentially dangerous elements that will
+                be sanitized.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Safe preview */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+            <Shield size={14} className="text-green-500" />
+            Safe HTML Preview:
+          </div>
+          <div className="p-3 bg-white dark:bg-gray-800 border border-border-default rounded max-h-32 overflow-auto">
+            <div
+              dangerouslySetInnerHTML={{ __html: htmlSafety.sanitizedContent }}
+            />
+          </div>
+        </div>
+      </div>
+    );
   };
 
   // Handle ESC key to close modal
@@ -277,6 +347,9 @@ const CreateClipboardItemModal: React.FC<CreateClipboardItemModalProps> = ({
               </div>
             </div>
 
+            {/* HTML Safety Check */}
+            {renderSafeHTMLPreview()}
+
             {/* Folder Selection */}
             <div>
               <label className="block text-sm font-medium text-text-primary mb-2">
@@ -310,6 +383,9 @@ const CreateClipboardItemModal: React.FC<CreateClipboardItemModalProps> = ({
                     <span className="font-medium text-text-primary text-sm">
                       {title || "Untitled"}
                     </span>
+                    {type === "html" && htmlSafety && !htmlSafety.isSafe && (
+                      <AlertTriangle size={14} className="text-yellow-500" />
+                    )}
                   </div>
                   <div className="text-xs text-text-secondary">
                     {type === "image" && content.startsWith("data:image") ? (

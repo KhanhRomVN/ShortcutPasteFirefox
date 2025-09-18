@@ -1,10 +1,9 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import {
   Copy,
   Download,
   ExternalLink,
   Eye,
-  EyeOff,
   FileText,
   Image,
   Link,
@@ -12,8 +11,15 @@ import {
   Save,
   X,
   Heart,
+  Shield,
+  AlertTriangle,
 } from "lucide-react";
 import { ClipboardItem } from "../../../types/clipboard";
+import {
+  sanitizeHTML,
+  isSafeHTML,
+  extractTextFromHTML,
+} from "../../../shared/utils/html-sanitizer";
 
 interface ClipboardContentViewerProps {
   item: ClipboardItem | null;
@@ -31,7 +37,25 @@ const ClipboardContentViewer: React.FC<ClipboardContentViewerProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
-  const [showRawContent, setShowRawContent] = useState(false);
+  const [showRawContent] = useState(false);
+  const [htmlRenderMode, setHtmlRenderMode] = useState<"safe" | "raw" | "text">(
+    "safe"
+  );
+
+  // Memoize HTML safety check and sanitization
+  const htmlInfo = useMemo(() => {
+    if (!item || item.type !== "html") return null;
+
+    const isContentSafe = isSafeHTML(item.content);
+    const sanitizedContent = sanitizeHTML(item.content);
+    const textContent = extractTextFromHTML(item.content);
+
+    return {
+      isContentSafe,
+      sanitizedContent,
+      textContent,
+    };
+  }, [item]);
 
   if (!item) {
     return (
@@ -118,6 +142,26 @@ const ClipboardContentViewer: React.FC<ClipboardContentViewerProps> = ({
     }
   };
 
+  const renderSafeHTMLContent = (content: string) => {
+    return (
+      <div className="space-y-3">
+        <div className="bg-white rounded border border-border-default p-3 max-h-72 overflow-auto text-sm">
+          <div dangerouslySetInnerHTML={{ __html: content }} />
+        </div>
+      </div>
+    );
+  };
+
+  const renderTextContent = (content: string) => {
+    return (
+      <div className="bg-input-background rounded p-3 max-h-72 overflow-auto">
+        <pre className="whitespace-pre-wrap break-words text-sm font-mono text-text-primary">
+          {content}
+        </pre>
+      </div>
+    );
+  };
+
   const renderContent = () => {
     const content = isEditing ? editContent : item.content;
 
@@ -140,20 +184,73 @@ const ClipboardContentViewer: React.FC<ClipboardContentViewerProps> = ({
       );
     }
 
-    if (item.type === "html" && !showRawContent) {
+    if (item.type === "html" && !isEditing) {
       return (
         <div className="space-y-3">
-          <div
-            className="bg-white rounded border border-border-default p-3 max-h-72 overflow-auto text-sm mx-auto"
-            dangerouslySetInnerHTML={{ __html: content }}
-          />
-          <button
-            onClick={() => setShowRawContent(true)}
-            className="flex items-center gap-2 text-sm text-primary hover:underline mx-auto"
-          >
-            <Eye size={14} />
-            Show Raw HTML
-          </button>
+          {/* HTML Security Warning */}
+          {htmlInfo && !htmlInfo.isContentSafe && (
+            <div className="flex items-center gap-2 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded">
+              <AlertTriangle
+                size={16}
+                className="text-yellow-600 dark:text-yellow-400"
+              />
+              <span className="text-sm text-yellow-800 dark:text-yellow-200">
+                This HTML content contains potentially unsafe elements. Viewing
+                in safe mode.
+              </span>
+            </div>
+          )}
+
+          {/* Render mode controls */}
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-text-secondary">View mode:</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setHtmlRenderMode("safe")}
+                className={`px-2 py-1 rounded text-xs transition-colors ${
+                  htmlRenderMode === "safe"
+                    ? "bg-primary text-white"
+                    : "bg-button-second-bg text-text-secondary hover:bg-button-second-bg-hover"
+                }`}
+              >
+                <Shield size={12} className="inline mr-1" />
+                Safe HTML
+              </button>
+              <button
+                onClick={() => setHtmlRenderMode("text")}
+                className={`px-2 py-1 rounded text-xs transition-colors ${
+                  htmlRenderMode === "text"
+                    ? "bg-primary text-white"
+                    : "bg-button-second-bg text-text-secondary hover:bg-button-second-bg-hover"
+                }`}
+              >
+                <FileText size={12} className="inline mr-1" />
+                Text Only
+              </button>
+              <button
+                onClick={() => setHtmlRenderMode("raw")}
+                className={`px-2 py-1 rounded text-xs transition-colors ${
+                  htmlRenderMode === "raw"
+                    ? "bg-primary text-white"
+                    : "bg-button-second-bg text-text-secondary hover:bg-button-second-bg-hover"
+                }`}
+              >
+                <Eye size={12} className="inline mr-1" />
+                Raw HTML
+              </button>
+            </div>
+          </div>
+
+          {/* Content based on render mode */}
+          {htmlRenderMode === "safe" &&
+            htmlInfo &&
+            renderSafeHTMLContent(htmlInfo.sanitizedContent)}
+
+          {htmlRenderMode === "text" &&
+            htmlInfo &&
+            renderTextContent(htmlInfo.textContent)}
+
+          {htmlRenderMode === "raw" && renderTextContent(content)}
         </div>
       );
     }
@@ -168,21 +265,7 @@ const ClipboardContentViewer: React.FC<ClipboardContentViewerProps> = ({
             placeholder="Content..."
           />
         ) : (
-          <div className="bg-input-background rounded p-3 max-h-72 overflow-auto">
-            <pre className="whitespace-pre-wrap break-words text-sm font-mono text-text-primary">
-              {content}
-            </pre>
-          </div>
-        )}
-
-        {item.type === "html" && showRawContent && (
-          <button
-            onClick={() => setShowRawContent(false)}
-            className="flex items-center gap-2 text-sm text-primary hover:underline mx-auto"
-          >
-            <EyeOff size={14} />
-            Show Rendered HTML
-          </button>
+          renderTextContent(content)
         )}
       </div>
     );
@@ -213,6 +296,15 @@ const ClipboardContentViewer: React.FC<ClipboardContentViewerProps> = ({
                     className="text-red-500 fill-current flex-shrink-0"
                   />
                 )}
+                {/* Security indicator for HTML */}
+                {item.type === "html" &&
+                  htmlInfo &&
+                  !htmlInfo.isContentSafe && (
+                    <AlertTriangle
+                      size={14}
+                      className="text-yellow-500 flex-shrink-0"
+                    />
+                  )}
               </div>
             )}
             <div className="flex items-center gap-3 mt-1 text-xs text-text-secondary">
