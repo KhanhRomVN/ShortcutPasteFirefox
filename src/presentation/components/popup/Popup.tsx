@@ -371,7 +371,7 @@ const Popup: React.FC = () => {
         </div>
 
         {/* Right Panel - Content Viewer */}
-        <div className="flex-1 p-3 flex">
+        <div className="flex-1 p-3 flex min-w-0 overflow-hidden">
           <ClipboardContentViewer
             item={selectedItem}
             onCopyToClipboard={handleCopyToClipboard}
