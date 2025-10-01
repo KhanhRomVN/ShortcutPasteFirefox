@@ -134,11 +134,11 @@ declare const browser: typeof chrome;
       }
     }
 
-    private insertContent(
+    private async insertContent(
       element: HTMLElement,
       content: string,
       type: string
-    ): boolean {
+    ): Promise<boolean> {
       try {
         logger.info(`📝 Inserting ${type} content into ${element.tagName}`, {});
 
@@ -148,7 +148,7 @@ declare const browser: typeof chrome;
         ) {
           return this.pasteToInput(element, content, type);
         } else if (element.isContentEditable) {
-          return this.pasteToContentEditable(element, content, type);
+          return await this.pasteToContentEditable(element, content, type);
         } else {
           logger.warn("❌ Active element is not editable:", {
             tagName: element.tagName,
@@ -166,43 +166,91 @@ declare const browser: typeof chrome;
 
     private triggerInputEvents(element: HTMLElement): void {
       try {
+        // Comprehensive event triggering for modern editors
         const events = [
-          new Event("focus", { bubbles: true }),
-          new Event("input", { bubbles: true }),
-          new Event("change", { bubbles: true }),
+          new Event("focus", { bubbles: true, composed: true }),
+          new Event("focusin", { bubbles: true, composed: true }),
+          new InputEvent("beforeinput", {
+            bubbles: true,
+            composed: true,
+            inputType: "insertText",
+          }),
+          new InputEvent("input", {
+            bubbles: true,
+            composed: true,
+            inputType: "insertText",
+          }),
+          new InputEvent("textInput", {
+            // For older browsers
+            bubbles: true,
+            composed: true,
+          } as any),
+          new Event("change", { bubbles: true, composed: true }),
           new KeyboardEvent("keydown", {
             bubbles: true,
+            composed: true,
             key: "v",
             ctrlKey: true,
+          }),
+          new KeyboardEvent("keypress", {
+            bubbles: true,
+            composed: true,
+            key: "v",
           }),
           new KeyboardEvent("keyup", {
             bubbles: true,
+            composed: true,
             key: "v",
             ctrlKey: true,
           }),
+          // Mutation events for legacy support
+          new Event("DOMSubtreeModified", { bubbles: true }),
         ];
 
         events.forEach((event) => {
           try {
             element.dispatchEvent(event);
           } catch (e) {
-            // Ignore individual event errors
+            logger.debug("Event dispatch warning:", e);
           }
         });
 
+        // Special handling for React/Vue/ProseMirror
         const reactKeys = Object.keys(element).find(
           (key) =>
             key.startsWith("__reactInternalInstance") ||
-            key.startsWith("_reactInternalFiber")
+            key.startsWith("_reactInternalFiber") ||
+            key.startsWith("__reactProps")
         );
 
         if (reactKeys) {
           logger.debug(
-            "🔄 Detected React component, triggering additional events",
-            {}
+            "🔄 Detected React component, triggering blur/focus cycle"
           );
-          element.dispatchEvent(new Event("blur", { bubbles: true }));
-          element.dispatchEvent(new Event("focus", { bubbles: true }));
+          element.dispatchEvent(
+            new Event("blur", { bubbles: true, composed: true })
+          );
+          setTimeout(() => {
+            element.dispatchEvent(
+              new Event("focus", { bubbles: true, composed: true })
+            );
+          }, 10);
+        }
+
+        // Check for ProseMirror (used by Claude.ai, Notion, etc.)
+        const isProseMirror =
+          element.classList.contains("ProseMirror") ||
+          element.querySelector(".ProseMirror") ||
+          element.hasAttribute("contenteditable");
+
+        if (isProseMirror) {
+          logger.debug(
+            "🔄 Detected ProseMirror editor, triggering additional events"
+          );
+          // ProseMirror listens to these specific events
+          element.dispatchEvent(
+            new Event("compositionend", { bubbles: true, composed: true })
+          );
         }
       } catch (error) {
         logger.warn("⚠️ Some input events failed to trigger:", error);
@@ -237,7 +285,7 @@ declare const browser: typeof chrome;
 
         let insertContent = content;
 
-        // Handle special cases
+        // Handle special cases for image data URLs
         if (
           type === "image" &&
           content.startsWith("data:image/") &&
@@ -249,29 +297,30 @@ declare const browser: typeof chrome;
           }
         }
 
-        // IMPORTANT: <input> elements don't support line breaks
-        // Convert line breaks to spaces for single-line inputs
-        if (element.tagName === "INPUT") {
+        // CRITICAL: Preserve line breaks for textarea, convert for single-line input
+        const hasLineBreaks = /\r?\n/.test(insertContent);
+
+        if (element.tagName === "INPUT" && hasLineBreaks) {
+          // Only convert line breaks to spaces for actual <input> elements
           insertContent = insertContent.replace(/\r?\n/g, " ");
+          logger.info(`⚠️ Converted line breaks to spaces for <input> element`);
+        } else if (element.tagName === "TEXTAREA" && hasLineBreaks) {
+          // Preserve line breaks for textarea
           logger.info(
-            "🔄 Converted line breaks to spaces for <input> element",
-            {
-              originalLength: content.length,
-              processedLength: insertContent.length,
-            }
+            `✅ Preserving ${
+              insertContent.split(/\r?\n/).length
+            } lines for <textarea>`
           );
         }
-        // For <textarea>, preserve line breaks as-is
-        else if (element.tagName === "TEXTAREA") {
-          logger.info("📝 Preserving line breaks for <textarea> element", {});
-        }
 
+        // Insert content at cursor position
         const newValue =
           element.value.substring(0, start) +
           insertContent +
           element.value.substring(end);
         element.value = newValue;
 
+        // Set cursor position after inserted content
         const newCursorPos = start + insertContent.length;
         element.selectionStart = element.selectionEnd = newCursorPos;
 
@@ -280,7 +329,10 @@ declare const browser: typeof chrome;
           {}
         );
 
+        // Trigger input events for frameworks like React/Vue to detect changes
         this.triggerInputEvents(element);
+
+        // Ensure the element is focused
         element.focus();
 
         logger.info("✅ Input paste completed successfully", {});
@@ -291,29 +343,141 @@ declare const browser: typeof chrome;
       }
     }
 
-    private pasteToContentEditable(
+    async pasteToContentEditable(
+      element: HTMLElement,
+      content: string,
+      type: string
+    ): Promise<boolean> {
+      logger.info("📝 Pasting to contentEditable element", {
+        contentType: type,
+        contentLength: content.length,
+        hasLineBreaks: /\r?\n/.test(content),
+        lineCount: content.split(/\r?\n/).length,
+      });
+
+      try {
+        // Ensure element is focused first
+        element.focus();
+
+        // PRIORITY: Try execCommand insertText first - best for preserving line breaks
+        if (document.queryCommandSupported?.("insertText")) {
+          logger.info(
+            "🎯 Trying execCommand insertText (best for line breaks)"
+          );
+
+          const success = document.execCommand("insertText", false, content);
+
+          if (success) {
+            logger.info("✅ execCommand insertText succeeded!");
+            this.triggerInputEvents(element);
+            return true;
+          } else {
+            logger.warn(
+              "⚠️ execCommand insertText returned false, trying fallback"
+            );
+          }
+        }
+
+        // Strategy 2: Try modern Input Events API
+        if (typeof InputEvent !== "undefined") {
+          logger.info("🎯 Trying Input Events API with insertText");
+
+          // Trigger beforeinput event
+          const beforeInputEvent = new InputEvent("beforeinput", {
+            bubbles: true,
+            cancelable: true,
+            inputType: "insertText",
+            data: content,
+            composed: true,
+          });
+
+          const notCancelled = element.dispatchEvent(beforeInputEvent);
+
+          if (notCancelled) {
+            // Use execCommand for actual insertion
+            const success = document.execCommand("insertText", false, content);
+
+            if (success) {
+              // Trigger input event after insertion
+              const inputEvent = new InputEvent("input", {
+                bubbles: true,
+                inputType: "insertText",
+                data: content,
+                composed: true,
+              });
+              element.dispatchEvent(inputEvent);
+
+              this.triggerInputEvents(element);
+              logger.info("✅ Paste successful via Input Events API");
+              return true;
+            }
+          }
+        }
+
+        // Strategy 2: Clipboard API approach (for modern editors)
+        if (navigator.clipboard?.writeText) {
+          logger.info("🎯 Trying Clipboard API");
+
+          try {
+            await navigator.clipboard.writeText(content);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+
+            // Simulate paste event
+            const pasteEvent = new ClipboardEvent("paste", {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+            });
+
+            // Try to set clipboardData
+            Object.defineProperty(pasteEvent, "clipboardData", {
+              value: {
+                getData: (format: string) =>
+                  format === "text/plain" ? content : "",
+                types: ["text/plain"],
+              },
+            });
+
+            element.dispatchEvent(pasteEvent);
+            this.triggerInputEvents(element);
+
+            // Verify paste worked
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            const currentText = element.textContent || element.innerText || "";
+
+            if (
+              currentText.includes(
+                content.substring(0, Math.min(50, content.length))
+              )
+            ) {
+              logger.info("✅ Paste successful via Clipboard API");
+              return true;
+            }
+          } catch (error) {
+            logger.warn("Clipboard API failed:", error);
+          }
+        }
+
+        // Strategy 3: Direct DOM manipulation fallback
+        logger.info("🎯 Using DOM manipulation fallback");
+        return this.fallbackPasteToContentEditable(element, content, type);
+      } catch (error) {
+        logger.error("❌ Failed to paste to contentEditable:", error);
+        return false;
+      }
+    }
+
+    private fallbackPasteToContentEditable(
       element: HTMLElement,
       content: string,
       type: string
     ): boolean {
-      logger.info("📝 Pasting to contentEditable element", {
-        contentType: type,
-      });
+      logger.info("📝 Using fallback DOM paste method");
 
       try {
         const selection = window.getSelection();
-        logger.info("🎯 Current selection:", {
-          hasSelection: !!selection,
-          rangeCount: selection?.rangeCount || 0,
-          isCollapsed: selection?.isCollapsed,
-        });
 
         if (!selection || selection.rangeCount === 0) {
-          logger.info(
-            "❌ No selection found, creating one at end of element",
-            {}
-          );
-
           const range = document.createRange();
           range.selectNodeContents(element);
           range.collapse(false);
@@ -326,37 +490,102 @@ declare const browser: typeof chrome;
 
         let nodeToInsert: Node;
 
-        if (type === "html" && this.isHtmlContent(content)) {
-          logger.info("🌐 Inserting HTML content", {});
+        if (type === "html") {
           const tempDiv = document.createElement("div");
           tempDiv.innerHTML = content;
-
           const fragment = document.createDocumentFragment();
           while (tempDiv.firstChild) {
             fragment.appendChild(tempDiv.firstChild);
           }
           nodeToInsert = fragment;
         } else if (type === "url") {
-          logger.info("🔗 Inserting URL as link", {});
           const link = document.createElement("a");
           link.href = content;
           link.textContent = content;
           link.target = "_blank";
           nodeToInsert = link;
         } else if (type === "image" && content.startsWith("data:image/")) {
-          logger.info("🖼️ Inserting image", {});
           const img = document.createElement("img");
           img.src = content;
           img.style.maxWidth = "100%";
           img.style.height = "auto";
           nodeToInsert = img;
         } else {
-          logger.info("📝 Inserting as text", {});
-          nodeToInsert = document.createTextNode(content);
+          // ENHANCED: Multi-strategy linebreak handling for modern editors
+          const fragment = document.createDocumentFragment();
+          const lines = content.split(/\r?\n/);
+
+          // Detect ProseMirror or similar advanced editors (Claude.ai, Notion, etc.)
+          const isProseMirror =
+            element.classList.contains("ProseMirror") ||
+            !!element.querySelector(".ProseMirror") ||
+            element.hasAttribute("data-pm-slice") ||
+            !!element.closest("[data-pm-slice]") ||
+            element.getAttribute("role") === "textbox" || // Claude.ai specific
+            element.getAttribute("contenteditable") === "true";
+
+          logger.info(
+            `🎯 Editor detection: ${
+              isProseMirror ? "ProseMirror-like" : "Standard contentEditable"
+            }`,
+            {
+              classList: element.className,
+              role: element.getAttribute("role"),
+              hasDataPmSlice: element.hasAttribute("data-pm-slice"),
+              lineCount: lines.length,
+            }
+          );
+
+          if (isProseMirror) {
+            // Strategy for ProseMirror: Insert each line with hard line breaks
+            logger.info(
+              `🎯 Using ProseMirror strategy for ${lines.length} lines`
+            );
+
+            lines.forEach((line, index) => {
+              // Add text node for the line content
+              if (line.length > 0) {
+                fragment.appendChild(document.createTextNode(line));
+              } else if (index === 0 || index === lines.length - 1) {
+                // For empty first/last lines, add zero-width space
+                fragment.appendChild(document.createTextNode("\u200B"));
+              }
+
+              // Add hard line break (Shift+Enter) between lines
+              if (index < lines.length - 1) {
+                const br = document.createElement("br");
+                // ProseMirror requires BR to be marked as hard break
+                br.setAttribute("data-pm-slice", "0 0 []");
+                fragment.appendChild(br);
+              }
+            });
+          } else {
+            // Strategy for standard contentEditable: use BR tags
+            logger.info(
+              `🎯 Using standard BR strategy for ${lines.length} lines`
+            );
+
+            lines.forEach((line, index) => {
+              if (line.length > 0 || index === 0) {
+                fragment.appendChild(document.createTextNode(line));
+              }
+
+              if (index < lines.length - 1) {
+                const br = document.createElement("br");
+                fragment.appendChild(br);
+
+                // Double BR for empty lines (better compatibility)
+                if (line.length === 0) {
+                  fragment.appendChild(document.createElement("br"));
+                }
+              }
+            });
+          }
+
+          nodeToInsert = fragment;
         }
 
         range.insertNode(nodeToInsert);
-
         range.setStartAfter(nodeToInsert);
         range.setEndAfter(nodeToInsert);
         selection!.removeAllRanges();
@@ -365,10 +594,14 @@ declare const browser: typeof chrome;
         this.triggerInputEvents(element);
         element.focus();
 
-        logger.info("✅ ContentEditable paste completed successfully", {});
+        setTimeout(() => {
+          element.focus();
+        }, 50);
+
+        logger.info("✅ Fallback paste completed successfully");
         return true;
       } catch (error) {
-        logger.error("❌ Failed to paste to contentEditable:", error);
+        logger.error("❌ Fallback paste failed:", error);
         return false;
       }
     }
@@ -615,6 +848,8 @@ declare const browser: typeof chrome;
         className: activeElement?.className || "no-class",
         disabled: (activeElement as HTMLInputElement)?.disabled,
         readOnly: (activeElement as HTMLInputElement)?.readOnly,
+        innerHTML: activeElement?.innerHTML?.substring(0, 100) || "none",
+        role: activeElement?.getAttribute("role") || "none",
       });
 
       if (document.readyState === "loading") {
