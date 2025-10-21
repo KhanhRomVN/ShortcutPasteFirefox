@@ -1,24 +1,24 @@
 {
   "manifest_version": 2,
   "name": "ShortcutPaste",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Quick paste favorite clipboard item",
-  
+
   "permissions": [
     "activeTab",
     "tabs",
-    "storage", 
+    "storage",
     "notifications",
     "<all_urls>"
   ],
-  
+
   "background": {
     "scripts": ["serviceWorker.js"],
     "persistent": false
   },
-  
+
   "content_security_policy": "script-src 'self'; object-src 'none';",
-  
+
   "browser_action": {
     "default_popup": "popup.html",
     "default_title": "ShortcutPaste",
@@ -28,21 +28,13 @@
       "128": "icon-128.png"
     }
   },
-  
+
   "icons": {
     "16": "icon-16.png",
     "48": "icon-48.png",
     "128": "icon-128.png"
   },
-  
-  "web_accessible_resources": [
-    "content-main.js",
-    "assets/*",
-    "icon-16.png",
-    "icon-48.png",
-    "icon-128.png"
-  ],
-  
+
   "commands": {
     "paste_favorite_clipboard": {
       "suggested_key": {
@@ -53,7 +45,7 @@
       "description": "Paste favorite clipboard item"
     }
   },
-  
+
   "applications": {
     "gecko": {
       "id": "shortcutpaste@example.com",
